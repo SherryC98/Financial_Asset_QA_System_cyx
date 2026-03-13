@@ -37,13 +37,9 @@ class DeepSeekAdapter(ModelAdapter):
     """OpenAI-compatible SDK adapter used for DeepSeek."""
 
     def __init__(self, config: ModelConfig):
-        import httpx
-        # Create HTTP client without proxy to avoid connection issues
-        http_client = httpx.Client(proxies=None)
         self.client = OpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
-            http_client=http_client
         )
         self.model_name = config.model_name
 
