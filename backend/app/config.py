@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     REDIS_DB: int = 0
 
     # ChromaDB configuration
-    CHROMA_PERSIST_DIR: str = "../vectorstore/chroma"
+    CHROMA_PERSIST_DIR: str = "data/chroma_db"
 
     # Retrieval models
     EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"

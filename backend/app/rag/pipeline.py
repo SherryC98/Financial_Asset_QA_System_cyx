@@ -1068,22 +1068,20 @@ class RAGPipeline:
         return self._embed_texts([query])[0]
 
     def _vector_search_candidates(self, query: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        if not self.vector_index_synced:
-            return []
         if self._collection_size() <= 0:
             return []
 
-        query_embedding = self._embed_query(query)
+        # Use query_texts to let ChromaDB handle embedding with its default function
         try:
             results = self.collection.query(
-                query_embeddings=[query_embedding],
+                query_texts=[query],
                 n_results=limit or settings.RAG_VECTOR_TOP_K,
             )
         except Exception:
             try:
                 self.collection = self._refresh_collection()
                 results = self.collection.query(
-                    query_embeddings=[query_embedding],
+                    query_texts=[query],
                     n_results=limit or settings.RAG_VECTOR_TOP_K,
                 )
             except Exception:

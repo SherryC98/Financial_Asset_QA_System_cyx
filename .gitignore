@@ -46,6 +46,10 @@ logs/
 *.sqlite
 *.sqlite3
 
+# Allow pre-built ChromaDB index
+!backend/data/chroma_db/
+!backend/data/chroma_db/**
+
 # Vector store
 vectorstore/
 !vectorstore/.gitkeep
