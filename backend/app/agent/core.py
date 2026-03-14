@@ -677,6 +677,14 @@ class AgentCore:
                 }
                 for item in web_results["results"][:3]
             ]
+            # Include web search content in text sent to LLM for synthesis
+            for item in web_results["results"][:5]:
+                title = item.get("title", "")
+                snippet = item.get("snippet", "")
+                date = item.get("published", "")
+                if title or snippet:
+                    date_prefix = f"[{date}] " if date else ""
+                    objective_lines.append(f"新闻：{date_prefix}{title}。{snippet[:300]}")
             blocks.append(
                 StructuredBlock(
                     type="bullets",
