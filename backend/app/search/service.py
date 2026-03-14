@@ -22,16 +22,25 @@ class WebSearchService:
         if not self.api_key:
             return WebSearchResult(results=[], search_query=query)
 
-        # 1. Query Expansion (Intent-Driven)
-        enhanced_query = query
+        # 1. Build a search-engine-friendly query
+        import re as _re
+        # Extract core terms: remove question words, keep entity + event + date
+        search_terms = query
+        # Remove common question patterns that don't help search
+        for noise in ["为什么", "为何", "什么原因", "是什么", "怎么回事", "请问", "请分析", "帮我"]:
+            search_terms = search_terms.replace(noise, "")
+        search_terms = search_terms.strip("？?，, 。.")
+
+        # Add stock symbols for better targeting
         if symbols:
-            symbol_str = ", ".join(symbols)
-            if symbol_str.lower() not in query.lower():
-                enhanced_query = f"{enhanced_query} ({symbol_str})"
+            symbol_str = " ".join(symbols)
+            search_terms = f"{search_terms} {symbol_str} stock"
+
+        enhanced_query = search_terms.strip()
 
         # 2. Market Fact Injection
         if context:
-            enhanced_query = f"{enhanced_query} [Market Context: {context}]"
+            enhanced_query = f"{enhanced_query} {context}"
 
         # 3. Determine search time range based on query content
         search_days = 7
@@ -69,7 +78,7 @@ class WebSearchService:
                     for item in data.get("results", [])[:max_results]:
                         results.append(SearchResult(
                             title=item.get("title", ""),
-                            snippet=item.get("content", "")[:250], # Increased snippet length
+                            snippet=item.get("content", "")[:500],
                             url=item.get("url", ""),
                             published=item.get("published_date"),
                             source="tavily_financial_news",

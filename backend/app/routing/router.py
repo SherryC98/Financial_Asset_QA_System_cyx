@@ -158,6 +158,14 @@ class QueryRouter:
         "5y",
         "1年",
         "5年",
+        "大涨",
+        "大跌",
+        "暴涨",
+        "暴跌",
+        "涨停",
+        "跌停",
+        "飙升",
+        "月",
     }
     INFO_KEYWORDS = {"市值", "市盈率", "市净率", "pe", "pb", "行业", "sector", "industry", "基本面", "信息"}
     METRIC_KEYWORDS = {"波动率", "收益率", "最大回撤", "回撤", "volatility", "return", "drawdown", "sharpe"}
