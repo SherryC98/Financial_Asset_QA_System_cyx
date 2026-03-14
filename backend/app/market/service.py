@@ -617,18 +617,25 @@ class MarketDataService:
         if not rows:
             return None
 
+        # Filter by date instead of row count, since each row is a trading day
+        now = datetime.utcnow()
         if range_key == "5y":
-            limit = 365 * 5
+            cutoff = now - timedelta(days=365 * 5)
         elif range_key == "1y":
-            limit = 365
+            cutoff = now - timedelta(days=365)
         elif range_key == "ytd":
-            current_year = datetime.utcnow().year
-            rows = [row for row in rows if row["Date"].startswith(str(current_year))]
-            limit = len(rows)
+            cutoff = datetime(now.year, 1, 1)
+        elif range_key == "6m":
+            cutoff = now - timedelta(days=180)
+        elif range_key == "3m":
+            cutoff = now - timedelta(days=90)
+        elif range_key == "1m":
+            cutoff = now - timedelta(days=30)
         else:
-            limit = days
+            cutoff = now - timedelta(days=days)
 
-        selected = rows[-max(limit, 1):]
+        cutoff_str = cutoff.strftime("%Y-%m-%d")
+        selected = [row for row in rows if row["Date"] >= cutoff_str]
         points: List[PricePoint] = []
         for row in selected:
             open_price = self._coerce_float(row.get("Open"))
