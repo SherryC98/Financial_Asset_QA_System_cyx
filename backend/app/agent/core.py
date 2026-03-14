@@ -377,7 +377,7 @@ class AgentCore:
         if route.requires_knowledge:
             add_tool("search_knowledge", {"query": route.cleaned_query, "date": route.date}, "检索知识库…", stage=1)
         if route.requires_web:
-            add_tool("search_web", {"query": route.cleaned_query, "date": route.date}, "检索市场新闻…", stage=1)
+            add_tool("search_web", {"query": route.cleaned_query, "date": route.date, "symbols": route.symbols}, "检索市场新闻…", stage=1)
         if route.requires_sec:
             add_tool("search_sec", {"query": route.cleaned_query, "symbols": route.symbols, "date": route.date}, "检索 SEC/财报公告…", stage=1)
 
@@ -882,12 +882,12 @@ class AgentCore:
                 adapter = ModelAdapterFactory.create_adapter(model_config)
                 
                 base_system_prompt = get_prompt("generator", "system_prompt") or ""
-                hard_guardrails = """绝对禁令（Guardrails）：
-1. 你的回答必须100%基于用户提供的上下文数据，不允许引入任何外部未提供的数值或事实。
+                hard_guardrails = “””回答规则：
+1. 优先基于上下文数据回答。若上下文中包含新闻摘要，请综合分析并给出有价值的回答。
 2. 禁止预测未来走势、买卖推荐、目标价等投资建议。
-3. 若数据不足，必须明确说明“缺乏足够数据支撑”，不要推测或估算。
-4. 必须使用简体中文回答，并在末尾强调免责声明。
-5. 禁止使用英文作为小节标题或术语。必须使用中文，例如：客观证据、分析、关键要点、涨跌幅、美元。禁止：Objective Evidence、Analysis、KEY POINTS、Change、USD。"""
+3. 若上下文完全不包含与问题相关的信息，才说明”数据不足”。只要有部分相关信息，就应尽力分析。
+4. 必须使用简体中文回答，并在末尾附简短免责声明。
+5. 使用中文小节标题，如：分析、关键要点、涨跌幅。”””
 
                 system_prompt = (base_system_prompt.strip() + "\n\n" + hard_guardrails).strip() if base_system_prompt else hard_guardrails
 

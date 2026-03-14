@@ -28,28 +28,36 @@ class WebSearchService:
             symbol_str = ", ".join(symbols)
             if symbol_str.lower() not in query.lower():
                 enhanced_query = f"{enhanced_query} ({symbol_str})"
-                
-        # 2. Market Fact Injection 
+
+        # 2. Market Fact Injection
         if context:
             enhanced_query = f"{enhanced_query} [Market Context: {context}]"
-            
+
+        # 3. Determine search time range based on query content
+        search_days = 7
+        import re
+        date_match = re.search(r'(\d{1,2})月(\d{1,2})日', query)
+        if date_match:
+            month, day = int(date_match.group(1)), int(date_match.group(2))
+            try:
+                target = datetime(datetime.utcnow().year, month, day)
+                days_ago = (datetime.utcnow() - target).days
+                if days_ago > 0:
+                    search_days = min(days_ago + 7, 180)
+            except ValueError:
+                pass
+
         try:
             async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
                 payload = {
                     "api_key": self.api_key,
                     "query": enhanced_query,
                     "max_results": max_results,
-                    "search_depth": "advanced", # Use advanced depth for better financial parsing
-                    "topic": "news", # Switch to News topic to avoid Wikipedia/old blogs
-                    "days": 7, # Restrict to recent 7 days for market dynamics
+                    "search_depth": "advanced",
+                    "topic": "news",
+                    "days": search_days,
                     "include_answer": False,
                     "include_raw_content": False,
-                    # 3. High-Signal Domain Whitelisting (Silicon Valley standard)
-                    "include_domains": [
-                        "bloomberg.com", "reuters.com", "cnbc.com", "wsj.com", 
-                        "finance.yahoo.com", "ft.com", "barrons.com", "investopedia.com",
-                        "seekingalpha.com", "marketwatch.com"
-                    ]
                 }
                 
                 response = await client.post(self.base_url, json=payload)
