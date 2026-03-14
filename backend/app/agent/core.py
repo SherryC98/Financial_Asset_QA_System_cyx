@@ -882,12 +882,14 @@ class AgentCore:
                 adapter = ModelAdapterFactory.create_adapter(model_config)
                 
                 base_system_prompt = get_prompt("generator", "system_prompt") or ""
-                hard_guardrails = “””回答规则：
-1. 优先基于上下文数据回答。若上下文中包含新闻摘要，请综合分析并给出有价值的回答。
-2. 禁止预测未来走势、买卖推荐、目标价等投资建议。
-3. 若上下文完全不包含与问题相关的信息，才说明”数据不足”。只要有部分相关信息，就应尽力分析。
-4. 必须使用简体中文回答，并在末尾附简短免责声明。
-5. 使用中文小节标题，如：分析、关键要点、涨跌幅。”””
+                hard_guardrails = (
+                    "回答规则：\n"
+                    "1. 优先基于上下文数据回答。若上下文中包含新闻摘要，请综合分析并给出有价值的回答。\n"
+                    "2. 禁止预测未来走势、买卖推荐、目标价等投资建议。\n"
+                    "3. 若上下文完全不包含与问题相关的信息，才说明数据不足。只要有部分相关信息，就应尽力分析。\n"
+                    "4. 必须使用简体中文回答，并在末尾附简短免责声明。\n"
+                    "5. 使用中文小节标题，如：分析、关键要点、涨跌幅。"
+                )
 
                 system_prompt = (base_system_prompt.strip() + "\n\n" + hard_guardrails).strip() if base_system_prompt else hard_guardrails
 
