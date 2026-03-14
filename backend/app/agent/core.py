@@ -881,17 +881,10 @@ class AgentCore:
                 from app.models.model_adapter import ModelAdapterFactory
                 adapter = ModelAdapterFactory.create_adapter(model_config)
                 
-                base_system_prompt = get_prompt("generator", "system_prompt") or ""
-                hard_guardrails = (
-                    "你是专业的金融分析助手。回答规则：\n"
-                    "1. 综合分析上下文中的所有信息（价格、涨跌、新闻、知识库），给出有洞察力的回答。\n"
-                    "2. 如果新闻摘要与问题相关（即使不完全匹配日期），分析可能的关联性和背景。\n"
-                    "3. 结合已有数据进行推理分析，不要只罗列数据不足之处。先说你能分析出什么，再补充说明哪些信息缺失。\n"
-                    "4. 禁止预测未来走势或给出买卖建议。\n"
-                    "5. 使用简体中文回答，末尾附简短免责声明。"
+                system_prompt = get_prompt("generator", "system_prompt") or (
+                    "你是专业的金融分析师助手。综合分析上下文中的价格、新闻、知识库信息，"
+                    "给出有洞察力的回答。禁止投资建议。使用简体中文。"
                 )
-
-                system_prompt = (base_system_prompt.strip() + "\n\n" + hard_guardrails).strip() if base_system_prompt else hard_guardrails
 
                 user_template = get_prompt("generator", "user_template")
                 api_completeness = max(0.0, min(1.0, float(validation.get("confidence", 0.0)) / 100.0))
