@@ -45,10 +45,10 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+!backend/vectorstore/**/*.sqlite3
 
-# Vector store
-vectorstore/
-!vectorstore/.gitkeep
+# Vector store (allow backend/vectorstore for Docker deployment)
+!backend/vectorstore/
 
 # Models cache (HuggingFace downloaded model weights)
 models/
