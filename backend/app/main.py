@@ -28,20 +28,15 @@ cache_warmer: CacheWarmer = None
 _logger = logging.getLogger(__name__)
 
 
-def _warmup_rag_models() -> None:
-    """Preload RAG embedding + reranker models in background to avoid first-request latency."""
+def _log_rag_status() -> None:
+    """Log RAG status without loading heavy models (saves ~400MB RAM)."""
     try:
-        from app.rag.hybrid_pipeline import HybridRAGPipeline
-        pipeline = HybridRAGPipeline()
+        from app.rag.pipeline import RAGPipeline
+        pipeline = RAGPipeline()
         count = pipeline.collection.count()
         _logger.info(f"[RAG] ChromaDB doc count: {count}")
-        if count > 0:
-            pipeline._ensure_models()
-            _logger.info("[RAG] Embedding + reranker models warmed up")
-        else:
-            _logger.warning("[RAG] ChromaDB empty, skipping model warmup")
     except Exception as e:
-        _logger.warning(f"[RAG] Warmup skipped: {e}")
+        _logger.warning(f"[RAG] Status check failed: {e}")
 
 
 @asynccontextmanager
@@ -59,8 +54,8 @@ async def lifespan(app: FastAPI):
         )
         await cache_warmer.start_background_warming()
 
-    # Warm up RAG models in background (embedding + reranker)
-    asyncio.create_task(asyncio.to_thread(_warmup_rag_models))
+    # Log RAG status (skip model preload to avoid OOM on Railway)
+    asyncio.create_task(asyncio.to_thread(_log_rag_status))
 
     yield
 
