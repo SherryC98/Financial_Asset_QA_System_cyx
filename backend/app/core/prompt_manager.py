@@ -22,7 +22,7 @@ class PromptManager:
             # Look for prompts.yaml in project root
             # __file__ is in backend/app/core/prompt_manager.py
             # Project root is 3 levels up: backend/app/core -> backend/app -> backend -> root
-            project_root = Path(__file__).resolve().parent.parent.parent.parent
+            project_root = Path(__file__).resolve().parent.parent.parent
             config_path = project_root / settings.PROMPTS_CONFIG_PATH
 
         self.config_path = Path(config_path).resolve()
