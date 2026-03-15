@@ -31,10 +31,9 @@ class RAGPipeline:
         # Initialize ChromaDB（解析为绝对路径，确保 RAG 向量库稳定接入）
         raw_dir = Path(settings.CHROMA_PERSIST_DIR)
         if not raw_dir.is_absolute():
-            # 项目根 = backend 的父目录
-            project_root = Path(__file__).resolve().parents[3]
-            # ../vectorstore/chroma -> 项目根/vectorstore/chroma
-            persist_dir = project_root / "vectorstore" / "chroma"
+            # backend 根目录 = app/rag -> app -> backend(/app in Docker)
+            backend_root = Path(__file__).resolve().parents[2]
+            persist_dir = backend_root / "vectorstore" / "chroma"
         else:
             persist_dir = raw_dir
         persist_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +66,7 @@ class RAGPipeline:
 
     def _load_local_documents(self) -> List[dict]:
         """Load from data/knowledge, raw_data/knowledge, raw_data/finance_report, dealed_data (md/json/html)."""
-        base = Path(__file__).resolve().parents[3] / "data"
+        base = Path(__file__).resolve().parents[2] / "data"
         documents = []
         seen_sources: set[str] = set()
 
