@@ -33,8 +33,12 @@ class Settings(BaseSettings):
     # ChromaDB configuration
     CHROMA_PERSIST_DIR: str = "../vectorstore/chroma"
 
-    # Retrieval models
-    EMBEDDING_MODEL: str = "BAAI/bge-base-zh-v1.5"
+    # Embedding API (SiliconFlow, OpenAI-compatible)
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_BASE_URL: str = "https://api.siliconflow.cn/v1"
+    EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
+
+    # Reranker (still local for now)
     RERANKER_MODEL: str = "BAAI/bge-reranker-base"
 
     # HuggingFace cache

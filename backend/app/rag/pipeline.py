@@ -1,13 +1,17 @@
 """
-RAG Pipeline - Two-stage retrieval with bge-base-zh and bge-reranker
+RAG Pipeline - Two-stage retrieval with SiliconFlow Embedding API and bge-reranker
 """
 import chromadb
 from chromadb.config import Settings as ChromaSettings
 from typing import List
 from pathlib import Path
 import re
+import logging
+from openai import OpenAI
 from app.config import settings
 from app.models import KnowledgeResult, Document
+
+_logger = logging.getLogger(__name__)
 
 
 class RAGPipeline:
@@ -45,24 +49,74 @@ class RAGPipeline:
             )
         )
 
-        # Get or create collection
+        # Get or create collection (with dimension compatibility check)
         self.collection = self.chroma_client.get_or_create_collection(
             name="financial_knowledge",
             metadata={"hnsw:space": "cosine"}
         )
+        self._check_embedding_dimension_compat()
 
-        self.embedding_model = None
+        self._embedding_client = None
         self.reranker = None
         self._local_documents = self._load_local_documents()
 
-    def _ensure_models(self):
-        """Load heavy embedding models only when vector retrieval is needed."""
-        if self.embedding_model is None:
-            from sentence_transformers import SentenceTransformer
-            self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+    def _check_embedding_dimension_compat(self):
+        """Check if existing ChromaDB embeddings match current model dimensions.
+
+        If there's a dimension mismatch (e.g. old index built with 768-dim bge-base
+        but current model is 1024-dim bge-large), delete and recreate the collection
+        to avoid query errors.
+        """
+        if self.collection.count() == 0:
+            return  # Empty collection, nothing to check
+
+        try:
+            # Peek at one stored embedding to get its dimension
+            peek = self.collection.peek(limit=1)
+            if not peek or not peek.get("embeddings") or not peek["embeddings"]:
+                return
+
+            stored_dim = len(peek["embeddings"][0])
+            # Expected dim for bge-large-zh-v1.5 = 1024, bge-base = 768
+            # We detect mismatch by checking if stored != expected
+            # bge-large-zh-v1.5 = 1024 dims
+            expected_dim = 1024 if "large" in settings.EMBEDDING_MODEL else 768
+
+            if stored_dim != expected_dim:
+                _logger.warning(
+                    f"[RAG] Embedding dimension mismatch: stored={stored_dim}, "
+                    f"expected={expected_dim} ({settings.EMBEDDING_MODEL}). "
+                    f"Deleting old collection and recreating..."
+                )
+                self.chroma_client.delete_collection("financial_knowledge")
+                self.collection = self.chroma_client.get_or_create_collection(
+                    name="financial_knowledge",
+                    metadata={"hnsw:space": "cosine"}
+                )
+                _logger.info("[RAG] Collection recreated. Re-index needed.")
+            else:
+                _logger.info(f"[RAG] Embedding dimensions OK: {stored_dim}d")
+        except Exception as e:
+            _logger.warning(f"[RAG] Dimension check failed (non-fatal): {e}")
+
+    def _get_embedding_client(self) -> OpenAI:
+        """Lazy-init OpenAI client for SiliconFlow Embedding API."""
+        if self._embedding_client is None:
+            self._embedding_client = OpenAI(
+                api_key=settings.EMBEDDING_API_KEY,
+                base_url=settings.EMBEDDING_BASE_URL,
+            )
+        return self._embedding_client
+
+    def _ensure_reranker(self):
+        """Load reranker model only when needed."""
         if self.reranker is None:
             from FlagEmbedding import FlagReranker
             self.reranker = FlagReranker(settings.RERANKER_MODEL, use_fp16=True)
+
+    def _ensure_models(self):
+        """Backward-compatible alias — only loads reranker now."""
+        self._ensure_reranker()
 
     def _load_local_documents(self) -> List[dict]:
         """Load from data/knowledge, raw_data/knowledge, raw_data/finance_report, dealed_data (md/json/html)."""
@@ -211,11 +265,29 @@ class RAGPipeline:
         top_results = ranked[:settings.RAG_TOP_N]
         return KnowledgeResult(documents=top_results, total_found=len(ranked))
 
+    def _call_embedding_api(self, texts: List[str]) -> List[List[float]]:
+        """Call SiliconFlow Embedding API (OpenAI-compatible format).
+
+        Args:
+            texts: List of texts to embed
+
+        Returns:
+            List of embedding vectors
+        """
+        client = self._get_embedding_client()
+        response = client.embeddings.create(
+            model=settings.EMBEDDING_MODEL,
+            input=texts,
+            encoding_format="float",
+        )
+        # Sort by index to guarantee order
+        sorted_items = sorted(response.data, key=lambda x: x.index)
+        return [item.embedding for item in sorted_items]
+
     def _embed_query(self, query: str) -> List[float]:
-        """Generate query embedding"""
-        self._ensure_models()
-        embedding = self.embedding_model.encode(query, normalize_embeddings=True)
-        return embedding.tolist()
+        """Generate query embedding via SiliconFlow API."""
+        embeddings = self._call_embedding_api([query])
+        return embeddings[0]
 
     async def search(self, query: str) -> KnowledgeResult:
         """
@@ -248,6 +320,7 @@ class RAGPipeline:
             })
 
         # Stage 2: Reranking
+        self._ensure_reranker()
         pairs = [[query, cand['content']] for cand in candidates]
         scores = self.reranker.compute_score(pairs, normalize=True)
 
@@ -291,7 +364,7 @@ class RAGPipeline:
         Only documents with reranker score >= score_threshold are returned.
         Raises an exception if models cannot be loaded so callers can fall back gracefully.
         """
-        self._ensure_models()  # raises if BGE/reranker unavailable
+        self._ensure_reranker()  # raises if reranker unavailable
 
         if self.collection.count() == 0:
             return KnowledgeResult(documents=[], total_found=0)
@@ -345,17 +418,19 @@ class RAGPipeline:
         )
 
     def add_documents(self, documents: List[str], metadatas: List[dict], ids: List[str]):
-        """Add documents to the knowledge base"""
-        self._ensure_models()
-        embeddings = self.embedding_model.encode(
-            documents,
-            normalize_embeddings=True,
-            show_progress_bar=True
-        )
+        """Add documents to the knowledge base using SiliconFlow API embeddings."""
+        # Batch embed via API (SiliconFlow supports up to ~64 texts per call)
+        batch_size = 32
+        all_embeddings = []
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i : i + batch_size]
+            batch_embeddings = self._call_embedding_api(batch)
+            all_embeddings.extend(batch_embeddings)
+            _logger.info(f"[Embedding API] Embedded {min(i + batch_size, len(documents))}/{len(documents)} docs")
 
         self.collection.add(
             documents=documents,
-            embeddings=embeddings.tolist(),
+            embeddings=all_embeddings,
             metadatas=metadatas,
             ids=ids
         )
