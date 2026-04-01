@@ -29,12 +29,12 @@ _logger = logging.getLogger(__name__)
 
 
 def _log_rag_status() -> None:
-    """Log RAG status without loading heavy models (saves ~400MB RAM)."""
+    """Log RAG status (lightweight keyword search only)."""
     try:
         from app.rag.pipeline import RAGPipeline
         pipeline = RAGPipeline()
-        count = pipeline.collection.count()
-        _logger.info(f"[RAG] ChromaDB doc count: {count}")
+        count = pipeline.get_collection_count()
+        _logger.info(f"[RAG] Local documents loaded: {count}")
     except Exception as e:
         _logger.warning(f"[RAG] Status check failed: {e}")
 

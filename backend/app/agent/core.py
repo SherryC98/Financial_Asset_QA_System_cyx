@@ -22,7 +22,6 @@ from app.models import SSEEvent, Source, StructuredBlock, ToolResult
 from app.models.model_adapter import ModelAdapterFactory
 from app.models.multi_model import model_manager
 from app.rag.confidence import ConfidenceScorer
-from app.rag.hybrid_pipeline import HybridRAGPipeline
 from app.routing import QueryRoute, QueryRouter, QueryType
 from app.search import SECFilingsService, WebSearchService
 
@@ -64,27 +63,16 @@ class AgentCore:
         self.preferred_model = preferred_model
         self.market_service = MarketDataService()
 
-        # Initialize RAG pipeline; fall back to base RAGPipeline on failure
+        # Initialize RAG pipeline (lightweight keyword search, no ChromaDB)
         self._vector_rag_available = False
         try:
-            self.rag_pipeline = HybridRAGPipeline()
-            _chroma_count = self.rag_pipeline.collection.count()
-            if _chroma_count > 0:
-                self._vector_rag_available = True
-                logger.info(f"[RAG] Vector search enabled — ChromaDB has {_chroma_count} docs")
-            else:
-                logger.warning("[RAG] ChromaDB collection is empty, token-match fallback active")
+            from app.rag.pipeline import RAGPipeline
+            self.rag_pipeline = RAGPipeline()
+            _doc_count = self.rag_pipeline.get_collection_count()
+            logger.info(f"[RAG] Keyword search ready — {_doc_count} local documents loaded")
         except Exception as _rag_init_err:
-            logger.warning(
-                f"[RAG] HybridRAGPipeline init failed ({_rag_init_err}), "
-                "falling back to token-match retrieval"
-            )
-            self._vector_rag_available = False
-            try:
-                from app.rag.pipeline import RAGPipeline
-                self.rag_pipeline = RAGPipeline()
-            except Exception:
-                pass  # rag_pipeline remains unset; search_knowledge will handle
+            logger.warning(f"[RAG] Pipeline init failed ({_rag_init_err})")
+            self.rag_pipeline = None
 
         self.confidence_scorer = ConfidenceScorer()
         self.search_service = WebSearchService()
@@ -121,47 +109,13 @@ class AgentCore:
           3. On vector error → fall back to token-match
           4. When no results + Tavily key present → trigger supplemental web search
         """
-        RAG_MIN_SCORE = 0.3
-        result = None
         method_used = "token_match"
 
-        # Fast path: token-match first (synchronous, no embedding/reranker load)
-        local_result = self.rag_pipeline._search_local_documents(query)
-        if local_result.documents:
-            result = local_result
-            logger.info(
-                f"[RAG] token-match fast path for {query!r}: "
-                f"{len(result.documents)} docs (skipping vector+rerank)"
-            )
-
-        if result is None and self._vector_rag_available:
-            try:
-                result = await self.rag_pipeline.search_grounded(query, score_threshold=RAG_MIN_SCORE)
-                method_used = "vector+rerank"
-                logger.info(
-                    f"[RAG] vector+rerank for {query!r}: "
-                    f"{len(result.documents)} docs returned (threshold={RAG_MIN_SCORE})"
-                )
-                if not result.documents:
-                    result = local_result
-                    logger.info(
-                        f"[RAG] vector returned 0 docs, using token-match fallback: "
-                        f"{len(local_result.documents)} docs"
-                    )
-            except Exception as _vec_err:
-                logger.warning(
-                    f"[RAG] Vector search failed ({_vec_err}), using token-match"
-                )
-                result = local_result
-                if "chromadb" in str(_vec_err).lower() or "collection" in str(_vec_err).lower():
-                    self._vector_rag_available = False
-                    logger.warning("[RAG] ChromaDB failure — vector search disabled for session")
-
-        if result is None:
-            result = local_result
-            logger.info(
-                f"[RAG] token-match for {query!r}: {len(result.documents)} docs returned"
-            )
+        # Keyword search (lightweight, no heavy dependencies)
+        result = await self.rag_pipeline.search(query)
+        logger.info(
+            f"[RAG] keyword search for {query!r}: {len(result.documents)} docs returned"
+        )
 
         data = result.model_dump()
         data["method_used"] = method_used

@@ -1,13 +1,15 @@
 """
-RAG Pipeline - Vector retrieval via SiliconFlow Embedding API (no local models)
+RAG Pipeline - Keyword search + optional SiliconFlow Embedding API vector search.
+No heavy local models (no torch/transformers/chromadb).
 """
-import chromadb
-from chromadb.config import Settings as ChromaSettings
-from typing import List
-from pathlib import Path
-import re
+import json
 import logging
+import re
+from pathlib import Path
+from typing import List, Optional
+
 from openai import OpenAI
+
 from app.config import settings
 from app.models import KnowledgeResult, Document
 
@@ -15,7 +17,7 @@ _logger = logging.getLogger(__name__)
 
 
 class RAGPipeline:
-    """RAG: API-based embedding retrieval + cosine distance ranking"""
+    """Lightweight RAG: keyword search primary, API-based vector search optional."""
 
     QUERY_EXPANSIONS = {
         "市盈率": {"pe", "price-to-earnings", "valuation", "估值"},
@@ -32,69 +34,15 @@ class RAGPipeline:
     }
 
     def __init__(self):
-        # Initialize ChromaDB（解析为绝对路径，确保 RAG 向量库稳定接入）
-        raw_dir = Path(settings.CHROMA_PERSIST_DIR)
-        if not raw_dir.is_absolute():
-            # backend 根目录 = app/rag -> app -> backend(/app in Docker)
-            backend_root = Path(__file__).resolve().parents[2]
-            persist_dir = backend_root / "vectorstore" / "chroma"
-        else:
-            persist_dir = raw_dir
-        persist_dir.mkdir(parents=True, exist_ok=True)
-
-        self.chroma_client = chromadb.PersistentClient(
-            path=str(persist_dir),
-            settings=ChromaSettings(
-                anonymized_telemetry=False
-            )
-        )
-
-        # Get or create collection (with dimension compatibility check)
-        self.collection = self.chroma_client.get_or_create_collection(
-            name="financial_knowledge",
-            metadata={"hnsw:space": "cosine"}
-        )
-        self._check_embedding_dimension_compat()
-
         self._embedding_client = None
         self._local_documents = self._load_local_documents()
+        _logger.info(f"[RAG] Loaded {len(self._local_documents)} local documents for keyword search")
 
-    def _check_embedding_dimension_compat(self):
-        """Check if existing ChromaDB embeddings match current model dimensions.
-
-        If there's a dimension mismatch (e.g. old index built with 768-dim bge-base
-        but current model is 1024-dim bge-large), delete and recreate the collection.
-        """
-        if self.collection.count() == 0:
-            return
-
-        try:
-            peek = self.collection.peek(limit=1)
-            if not peek or not peek.get("embeddings") or not peek["embeddings"]:
-                return
-
-            stored_dim = len(peek["embeddings"][0])
-            expected_dim = 1024 if "large" in settings.EMBEDDING_MODEL else 768
-
-            if stored_dim != expected_dim:
-                _logger.warning(
-                    f"[RAG] Embedding dimension mismatch: stored={stored_dim}, "
-                    f"expected={expected_dim} ({settings.EMBEDDING_MODEL}). "
-                    f"Deleting old collection and recreating..."
-                )
-                self.chroma_client.delete_collection("financial_knowledge")
-                self.collection = self.chroma_client.get_or_create_collection(
-                    name="financial_knowledge",
-                    metadata={"hnsw:space": "cosine"}
-                )
-                _logger.info("[RAG] Collection recreated. Re-index needed.")
-            else:
-                _logger.info(f"[RAG] Embedding dimensions OK: {stored_dim}d")
-        except Exception as e:
-            _logger.warning(f"[RAG] Dimension check failed (non-fatal): {e}")
+    # ------------------------------------------------------------------
+    # Embedding API (SiliconFlow, OpenAI-compatible)
+    # ------------------------------------------------------------------
 
     def _get_embedding_client(self) -> OpenAI:
-        """Lazy-init OpenAI client for SiliconFlow Embedding API."""
         if self._embedding_client is None:
             self._embedding_client = OpenAI(
                 api_key=settings.EMBEDDING_API_KEY,
@@ -102,8 +50,27 @@ class RAGPipeline:
             )
         return self._embedding_client
 
+    def _call_embedding_api(self, texts: List[str]) -> List[List[float]]:
+        """Call SiliconFlow Embedding API (OpenAI-compatible format)."""
+        client = self._get_embedding_client()
+        response = client.embeddings.create(
+            model=settings.EMBEDDING_MODEL,
+            input=texts,
+            encoding_format="float",
+        )
+        sorted_items = sorted(response.data, key=lambda x: x.index)
+        return [item.embedding for item in sorted_items]
+
+    def _embed_query(self, query: str) -> List[float]:
+        embeddings = self._call_embedding_api([query])
+        return embeddings[0]
+
+    # ------------------------------------------------------------------
+    # Local document loading (keyword search corpus)
+    # ------------------------------------------------------------------
+
     def _load_local_documents(self) -> List[dict]:
-        """Load from data/knowledge, raw_data/knowledge, raw_data/finance_report, dealed_data (md/json/html)."""
+        """Load from data/knowledge, raw_data/knowledge, raw_data/finance_report, dealed_data."""
         base = Path(__file__).resolve().parents[2] / "data"
         documents = []
         seen_sources: set[str] = set()
@@ -120,7 +87,6 @@ class RAGPipeline:
                 "tokens": self._tokenize_text(content),
             })
 
-        # 1. knowledge, raw_data: 仅 md
         for rel_dir in ("knowledge", "raw_data/knowledge", "raw_data/finance_report"):
             dir_path = base / rel_dir
             if not dir_path.exists():
@@ -137,7 +103,6 @@ class RAGPipeline:
                 if content:
                     add_doc(content, file_path.name, key)
 
-        # 2. dealed_data: md, json, html
         dealed_dir = base / "dealed_data"
         if dealed_dir.exists():
             for file_path in sorted(dealed_dir.iterdir()):
@@ -166,9 +131,7 @@ class RAGPipeline:
 
     @staticmethod
     def _extract_text_from_mineru_json(file_path: Path) -> str:
-        """Extract text from MinerU JSON (pdf_info[].para_blocks[].lines[].spans[].content)."""
         try:
-            import json
             data = json.loads(file_path.read_text(encoding="utf-8"))
             parts = []
             for page in data.get("pdf_info", []):
@@ -184,9 +147,7 @@ class RAGPipeline:
 
     @staticmethod
     def _extract_text_from_html(file_path: Path) -> str:
-        """Extract text from HTML body."""
         try:
-            import re
             raw = file_path.read_text(encoding="utf-8")
             raw = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", raw, flags=re.I)
             raw = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", raw, flags=re.I)
@@ -214,6 +175,10 @@ class RAGPipeline:
                 for index in range(0, len(chunk) - size + 1):
                     tokens.add(chunk[index:index + size])
         return tokens
+
+    # ------------------------------------------------------------------
+    # Keyword search (primary path — no heavy deps)
+    # ------------------------------------------------------------------
 
     def _search_local_documents(self, query: str) -> KnowledgeResult:
         query_tokens = self._tokenize_text(query)
@@ -246,114 +211,18 @@ class RAGPipeline:
         top_results = ranked[:settings.RAG_TOP_N]
         return KnowledgeResult(documents=top_results, total_found=len(ranked))
 
-    def _call_embedding_api(self, texts: List[str]) -> List[List[float]]:
-        """Call SiliconFlow Embedding API (OpenAI-compatible format)."""
-        client = self._get_embedding_client()
-        response = client.embeddings.create(
-            model=settings.EMBEDDING_MODEL,
-            input=texts,
-            encoding_format="float",
-        )
-        sorted_items = sorted(response.data, key=lambda x: x.index)
-        return [item.embedding for item in sorted_items]
-
-    def _embed_query(self, query: str) -> List[float]:
-        """Generate query embedding via SiliconFlow API."""
-        embeddings = self._call_embedding_api([query])
-        return embeddings[0]
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     async def search(self, query: str) -> KnowledgeResult:
-        """
-        Search: keyword match first, then vector search ranked by cosine distance.
-        """
-        local_result = self._search_local_documents(query)
-        if local_result.documents:
-            return local_result
-
-        # Vector search via ChromaDB (cosine distance, lower = more similar)
-        query_embedding = self._embed_query(query)
-
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=settings.RAG_TOP_K
-        )
-
-        if not results['documents'] or not results['documents'][0]:
-            return KnowledgeResult(documents=[], total_found=0)
-
-        # Rank by cosine similarity (1 - distance) and filter by threshold
-        ranked = []
-        for i, doc in enumerate(results['documents'][0]):
-            distance = results['distances'][0][i] if results['distances'] else 0
-            similarity = 1.0 - distance  # cosine space: distance in [0, 2]
-            if similarity >= settings.RAG_SCORE_THRESHOLD:
-                ranked.append(Document(
-                    content=doc,
-                    source=results['metadatas'][0][i].get('source', 'unknown'),
-                    score=similarity,
-                ))
-
-        ranked.sort(key=lambda d: d.score, reverse=True)
-        top_results = ranked[:settings.RAG_TOP_N]
-
-        return KnowledgeResult(
-            documents=top_results,
-            total_found=len(results['documents'][0])
-        )
+        """Primary search: keyword match on local documents."""
+        return self._search_local_documents(query)
 
     async def search_grounded(self, query: str, score_threshold: float = 0.3) -> KnowledgeResult:
-        """Direct vector search without token-match shortcircuit.
-
-        Unlike search(), this always queries ChromaDB.
-        Only documents with similarity >= score_threshold are returned.
-        """
-        if self.collection.count() == 0:
-            return KnowledgeResult(documents=[], total_found=0)
-
-        query_embedding = self._embed_query(query)
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=settings.RAG_TOP_K,
-        )
-
-        if not results["documents"] or not results["documents"][0]:
-            return KnowledgeResult(documents=[], total_found=0)
-
-        ranked = []
-        for i, doc in enumerate(results["documents"][0]):
-            distance = results["distances"][0][i] if results["distances"] else 0
-            similarity = 1.0 - distance
-            if similarity >= score_threshold:
-                ranked.append(Document(
-                    content=doc,
-                    source=results["metadatas"][0][i].get("source", "unknown"),
-                    score=similarity,
-                ))
-
-        ranked.sort(key=lambda d: d.score, reverse=True)
-
-        return KnowledgeResult(
-            documents=ranked[:settings.RAG_TOP_N],
-            total_found=len(results["documents"][0]),
-        )
-
-    def add_documents(self, documents: List[str], metadatas: List[dict], ids: List[str]):
-        """Add documents to the knowledge base using SiliconFlow API embeddings."""
-        batch_size = 32
-        all_embeddings = []
-        for i in range(0, len(documents), batch_size):
-            batch = documents[i : i + batch_size]
-            batch_embeddings = self._call_embedding_api(batch)
-            all_embeddings.extend(batch_embeddings)
-            _logger.info(f"[Embedding API] Embedded {min(i + batch_size, len(documents))}/{len(documents)} docs")
-
-        self.collection.add(
-            documents=documents,
-            embeddings=all_embeddings,
-            metadatas=metadatas,
-            ids=ids
-        )
+        """Same as search() — keyword match only (ChromaDB removed to save memory)."""
+        return self._search_local_documents(query)
 
     def get_collection_count(self) -> int:
-        """Get total document count"""
-        return self.collection.count()
+        """Return number of local documents available for keyword search."""
+        return len(self._local_documents)

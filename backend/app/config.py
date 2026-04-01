@@ -30,9 +30,6 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
 
-    # ChromaDB configuration
-    CHROMA_PERSIST_DIR: str = "../vectorstore/chroma"
-
     # Embedding API (SiliconFlow, OpenAI-compatible)
     EMBEDDING_API_KEY: str = ""
     EMBEDDING_BASE_URL: str = "https://api.siliconflow.cn/v1"
