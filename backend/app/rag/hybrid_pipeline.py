@@ -193,29 +193,15 @@ class HybridRAGPipeline(RAGPipeline):
                 'distance': 1.0 - result['rrf_score']  # 转换为距离
             })
 
-        # 5. 重排序
+        # 5. 使用 RRF 分数排序（不再使用本地 reranker 模型）
         if candidates:
-            pairs = [[query, cand['content']] for cand in candidates]
-            scores = self.reranker.compute_score(pairs, normalize=True)
+            # 按 RRF 分数排序（距离越小越好，转换为相似度）
+            for cand in candidates:
+                cand['score'] = 1.0 - cand['distance']
 
-            if not isinstance(scores, list):
-                scores = [scores]
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            top_results = [c for c in candidates[:3] if c['score'] >= 0.3]
 
-            # 组合重排序分数
-            ranked = []
-            for i, score in enumerate(scores):
-                if score >= 0.3:  # 降低阈值以获得更多结果
-                    ranked.append({
-                        'content': candidates[i]['content'],
-                        'source': candidates[i]['source'],
-                        'score': float(score)
-                    })
-
-            # 按分数排序
-            ranked.sort(key=lambda x: x['score'], reverse=True)
-            top_results = ranked[:3]
-
-            # 转换为Document模型
             documents = [
                 Document(
                     content=item['content'],
@@ -230,5 +216,4 @@ class HybridRAGPipeline(RAGPipeline):
                 total_found=len(fused_results)
             )
 
-        # 如果没有候选结果，返回空
         return KnowledgeResult(documents=[], total_found=0)

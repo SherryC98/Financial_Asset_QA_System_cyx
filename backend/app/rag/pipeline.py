@@ -1,5 +1,5 @@
 """
-RAG Pipeline - Two-stage retrieval with SiliconFlow Embedding API and bge-reranker
+RAG Pipeline - Vector retrieval via SiliconFlow Embedding API (no local models)
 """
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -15,7 +15,7 @@ _logger = logging.getLogger(__name__)
 
 
 class RAGPipeline:
-    """Two-stage RAG: Bi-Encoder retrieval + Cross-Encoder reranking"""
+    """RAG: API-based embedding retrieval + cosine distance ranking"""
 
     QUERY_EXPANSIONS = {
         "市盈率": {"pe", "price-to-earnings", "valuation", "估值"},
@@ -57,29 +57,23 @@ class RAGPipeline:
         self._check_embedding_dimension_compat()
 
         self._embedding_client = None
-        self.reranker = None
         self._local_documents = self._load_local_documents()
 
     def _check_embedding_dimension_compat(self):
         """Check if existing ChromaDB embeddings match current model dimensions.
 
         If there's a dimension mismatch (e.g. old index built with 768-dim bge-base
-        but current model is 1024-dim bge-large), delete and recreate the collection
-        to avoid query errors.
+        but current model is 1024-dim bge-large), delete and recreate the collection.
         """
         if self.collection.count() == 0:
-            return  # Empty collection, nothing to check
+            return
 
         try:
-            # Peek at one stored embedding to get its dimension
             peek = self.collection.peek(limit=1)
             if not peek or not peek.get("embeddings") or not peek["embeddings"]:
                 return
 
             stored_dim = len(peek["embeddings"][0])
-            # Expected dim for bge-large-zh-v1.5 = 1024, bge-base = 768
-            # We detect mismatch by checking if stored != expected
-            # bge-large-zh-v1.5 = 1024 dims
             expected_dim = 1024 if "large" in settings.EMBEDDING_MODEL else 768
 
             if stored_dim != expected_dim:
@@ -107,16 +101,6 @@ class RAGPipeline:
                 base_url=settings.EMBEDDING_BASE_URL,
             )
         return self._embedding_client
-
-    def _ensure_reranker(self):
-        """Load reranker model only when needed."""
-        if self.reranker is None:
-            from FlagEmbedding import FlagReranker
-            self.reranker = FlagReranker(settings.RERANKER_MODEL, use_fp16=True)
-
-    def _ensure_models(self):
-        """Backward-compatible alias — only loads reranker now."""
-        self._ensure_reranker()
 
     def _load_local_documents(self) -> List[dict]:
         """Load from data/knowledge, raw_data/knowledge, raw_data/finance_report, dealed_data (md/json/html)."""
@@ -204,10 +188,8 @@ class RAGPipeline:
         try:
             import re
             raw = file_path.read_text(encoding="utf-8")
-            # 移除 script/style
             raw = re.sub(r"<script[^>]*>[\s\S]*?</script>", "", raw, flags=re.I)
             raw = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", raw, flags=re.I)
-            # 提取 body 文本
             body = re.search(r"<body[^>]*>([\s\S]*?)</body>", raw, re.I)
             if body:
                 body = body.group(1)
@@ -216,7 +198,6 @@ class RAGPipeline:
             text = re.sub(r"<[^>]+>", " ", body)
             text = re.sub(r"\s+", " ", text)
             return text.strip()
-
         except Exception:
             return ""
 
@@ -266,21 +247,13 @@ class RAGPipeline:
         return KnowledgeResult(documents=top_results, total_found=len(ranked))
 
     def _call_embedding_api(self, texts: List[str]) -> List[List[float]]:
-        """Call SiliconFlow Embedding API (OpenAI-compatible format).
-
-        Args:
-            texts: List of texts to embed
-
-        Returns:
-            List of embedding vectors
-        """
+        """Call SiliconFlow Embedding API (OpenAI-compatible format)."""
         client = self._get_embedding_client()
         response = client.embeddings.create(
             model=settings.EMBEDDING_MODEL,
             input=texts,
             encoding_format="float",
         )
-        # Sort by index to guarantee order
         sorted_items = sorted(response.data, key=lambda x: x.index)
         return [item.embedding for item in sorted_items]
 
@@ -291,15 +264,13 @@ class RAGPipeline:
 
     async def search(self, query: str) -> KnowledgeResult:
         """
-        Two-stage search:
-        1. Bi-Encoder: Vector search (Top-K=10)
-        2. Cross-Encoder: Rerank (Top-N=3, score > threshold)
+        Search: keyword match first, then vector search ranked by cosine distance.
         """
         local_result = self._search_local_documents(query)
         if local_result.documents:
             return local_result
 
-        # Stage 1: Vector search
+        # Vector search via ChromaDB (cosine distance, lower = more similar)
         query_embedding = self._embed_query(query)
 
         results = self.collection.query(
@@ -310,62 +281,32 @@ class RAGPipeline:
         if not results['documents'] or not results['documents'][0]:
             return KnowledgeResult(documents=[], total_found=0)
 
-        # Prepare candidates for reranking
-        candidates = []
-        for i, doc in enumerate(results['documents'][0]):
-            candidates.append({
-                'content': doc,
-                'source': results['metadatas'][0][i].get('source', 'unknown'),
-                'distance': results['distances'][0][i] if results['distances'] else 0
-            })
-
-        # Stage 2: Reranking
-        self._ensure_reranker()
-        pairs = [[query, cand['content']] for cand in candidates]
-        scores = self.reranker.compute_score(pairs, normalize=True)
-
-        # Convert to list if single score
-        if not isinstance(scores, list):
-            scores = [scores]
-
-        # Combine scores with candidates
+        # Rank by cosine similarity (1 - distance) and filter by threshold
         ranked = []
-        for i, score in enumerate(scores):
-            if score >= settings.RAG_SCORE_THRESHOLD:
-                ranked.append({
-                    'content': candidates[i]['content'],
-                    'source': candidates[i]['source'],
-                    'score': float(score)
-                })
+        for i, doc in enumerate(results['documents'][0]):
+            distance = results['distances'][0][i] if results['distances'] else 0
+            similarity = 1.0 - distance  # cosine space: distance in [0, 2]
+            if similarity >= settings.RAG_SCORE_THRESHOLD:
+                ranked.append(Document(
+                    content=doc,
+                    source=results['metadatas'][0][i].get('source', 'unknown'),
+                    score=similarity,
+                ))
 
-        # Sort by score and take top N
-        ranked.sort(key=lambda x: x['score'], reverse=True)
+        ranked.sort(key=lambda d: d.score, reverse=True)
         top_results = ranked[:settings.RAG_TOP_N]
 
-        # Convert to Document models
-        documents = [
-            Document(
-                content=item['content'],
-                source=item['source'],
-                score=item['score']
-            )
-            for item in top_results
-        ]
-
         return KnowledgeResult(
-            documents=documents,
+            documents=top_results,
             total_found=len(results['documents'][0])
         )
 
     async def search_grounded(self, query: str, score_threshold: float = 0.3) -> KnowledgeResult:
-        """Direct vector search + Cross-Encoder reranking without token-match shortcircuit.
+        """Direct vector search without token-match shortcircuit.
 
-        Unlike search(), this always queries ChromaDB and applies the reranker.
-        Only documents with reranker score >= score_threshold are returned.
-        Raises an exception if models cannot be loaded so callers can fall back gracefully.
+        Unlike search(), this always queries ChromaDB.
+        Only documents with similarity >= score_threshold are returned.
         """
-        self._ensure_reranker()  # raises if reranker unavailable
-
         if self.collection.count() == 0:
             return KnowledgeResult(documents=[], total_found=0)
 
@@ -378,48 +319,26 @@ class RAGPipeline:
         if not results["documents"] or not results["documents"][0]:
             return KnowledgeResult(documents=[], total_found=0)
 
-        candidates = [
-            {
-                "content": doc,
-                "source": results["metadatas"][0][i].get("source", "unknown"),
-            }
-            for i, doc in enumerate(results["documents"][0])
-        ]
+        ranked = []
+        for i, doc in enumerate(results["documents"][0]):
+            distance = results["distances"][0][i] if results["distances"] else 0
+            similarity = 1.0 - distance
+            if similarity >= score_threshold:
+                ranked.append(Document(
+                    content=doc,
+                    source=results["metadatas"][0][i].get("source", "unknown"),
+                    score=similarity,
+                ))
 
-        pairs = [[query, cand["content"]] for cand in candidates]
-        # Handle FlagReranker API differences across versions
-        try:
-            scores = self.reranker.compute_score(pairs, normalize=True)
-        except TypeError:
-            import math
-            raw = self.reranker.compute_score(pairs)
-            if not isinstance(raw, list):
-                raw = [raw]
-            # Apply sigmoid to map raw logits into [0, 1]
-            scores = [1.0 / (1.0 + math.exp(-float(s))) for s in raw]
-
-        if not isinstance(scores, list):
-            scores = [scores]
-
-        ranked = [
-            Document(
-                content=candidates[i]["content"],
-                source=candidates[i]["source"],
-                score=float(score),
-            )
-            for i, score in enumerate(scores)
-            if float(score) >= score_threshold
-        ]
         ranked.sort(key=lambda d: d.score, reverse=True)
 
         return KnowledgeResult(
-            documents=ranked[: settings.RAG_TOP_N],
+            documents=ranked[:settings.RAG_TOP_N],
             total_found=len(results["documents"][0]),
         )
 
     def add_documents(self, documents: List[str], metadatas: List[dict], ids: List[str]):
         """Add documents to the knowledge base using SiliconFlow API embeddings."""
-        # Batch embed via API (SiliconFlow supports up to ~64 texts per call)
         batch_size = 32
         all_embeddings = []
         for i in range(0, len(documents), batch_size):

@@ -38,13 +38,6 @@ class Settings(BaseSettings):
     EMBEDDING_BASE_URL: str = "https://api.siliconflow.cn/v1"
     EMBEDDING_MODEL: str = "BAAI/bge-large-zh-v1.5"
 
-    # Reranker (still local for now)
-    RERANKER_MODEL: str = "BAAI/bge-reranker-base"
-
-    # HuggingFace cache
-    HF_HOME: str = "../models/huggingface"
-    TRANSFORMERS_CACHE: str = "../models/transformers"
-
     # Cache TTL (seconds)
     CACHE_TTL_PRICE: int = 60
     CACHE_TTL_HISTORY: int = 86400
