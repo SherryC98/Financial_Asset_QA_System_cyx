@@ -20,7 +20,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 import httpx
 import numpy as np
 import redis
-import yfinance as yf
+yf = None  # lazy-loaded to save ~130MB RAM at startup
 
 from app.cache.popular_stocks import get_popular_stocks
 from app.config import settings
@@ -241,7 +241,14 @@ class MarketDataService:
             return "crypto"
         return "equity"
 
-    async def _fetch_yfinance(self, symbol: str) -> Optional[yf.Ticker]:
+    async def _fetch_yfinance(self, symbol: str):
+        global yf
+        if yf is None:
+            try:
+                import yfinance as _yf
+                yf = _yf
+            except ImportError:
+                return None
         try:
             return await asyncio.to_thread(yf.Ticker, symbol)
         except Exception:

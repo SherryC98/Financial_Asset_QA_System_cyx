@@ -3,8 +3,16 @@
 Confidence Scorer for answer reliability
 """
 from typing import List
-import jieba
 from app.models import Document
+
+_jieba = None
+
+def _get_jieba():
+    global _jieba
+    if _jieba is None:
+        import jieba
+        _jieba = jieba
+    return _jieba
 
 
 class ConfidenceScorer:
@@ -76,8 +84,8 @@ class ConfidenceScorer:
             覆盖度 (0-1)
         """
         # 分词
-        query_tokens = set(jieba.cut(query))
-        doc_tokens = set(jieba.cut(document))
+        query_tokens = set(_get_jieba().cut(query))
+        doc_tokens = set(_get_jieba().cut(document))
 
         # 移除停用词（简单版本）
         stopwords = {'的', '了', '是', '在', '有', '和', '与', '或', '等', '吗', '呢', '啊'}
