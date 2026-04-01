@@ -85,8 +85,9 @@ app.include_router(router, prefix="/api")
 
 
 @app.get("/")
+@app.head("/")
 async def root():
-    """Root endpoint"""
+    """Root endpoint (supports GET + HEAD for health checks)"""
     return {
         "name": "Financial Asset QA System",
         "version": "1.0.0",
