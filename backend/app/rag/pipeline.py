@@ -75,16 +75,19 @@ class RAGPipeline:
         documents = []
         seen_sources: set[str] = set()
 
+        MAX_SNIPPET = 1500  # Only keep first 1500 chars to save memory
+
         def add_doc(content: str, source: str, key: str) -> None:
             if not content or len(content.strip()) < 20:
                 return
             if key in seen_sources:
                 return
             seen_sources.add(key)
+            snippet = content[:MAX_SNIPPET].strip()
             documents.append({
                 "source": source,
-                "content": content,
-                "tokens": self._tokenize_text(content),
+                "content": snippet,
+                "tokens": self._tokenize_text(snippet),
             })
 
         for rel_dir in ("knowledge", "raw_data/knowledge", "raw_data/finance_report"):

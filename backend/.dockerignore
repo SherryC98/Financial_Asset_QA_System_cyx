@@ -6,3 +6,6 @@ tests/
 *.err
 *.bat
 verify_integration.sh
+vectorstore/
+.pytest_cache/
+*.egg-info/
