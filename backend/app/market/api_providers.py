@@ -8,7 +8,10 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fredapi import Fred
+try:
+    from fredapi import Fred
+except ImportError:
+    Fred = None
 
 from app.config import settings
 

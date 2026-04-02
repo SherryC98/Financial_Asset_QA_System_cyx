@@ -3,9 +3,12 @@
 Hybrid Retrieval Pipeline combining vector search and BM25
 """
 from typing import List, Dict, Any
-import numpy as np
-from rank_bm25 import BM25Okapi
-import jieba
+try:
+    import numpy as np
+    from rank_bm25 import BM25Okapi
+    import jieba
+except ImportError:
+    pass  # Optional deps — this module is not used in production
 from app.rag.pipeline import RAGPipeline
 from app.models import KnowledgeResult, Document
 
